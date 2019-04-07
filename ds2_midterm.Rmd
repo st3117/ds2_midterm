@@ -1,0 +1,199 @@
+---
+title: "ds2_midterm"
+author: "Sha Tao"
+date: "April 7, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readxl)
+library(mice)
+library(caret)
+library(corrplot)
+library(ggpubr)
+library(factoextra)
+library(mlbench)
+library(pROC)
+library(AppliedPredictiveModeling)
+library(tidyverse)
+
+```
+
+
+
+```{r}
+
+
+adni = read_excel("data/dataset1.xlsx") %>% 
+  janitor::clean_names() %>% 
+  group_by(rid) %>% 
+  filter(month_dataset1 == max(month_dataset1)) %>% 
+  ungroup(rid) %>% 
+  select(rid, dxcurren, ptgender, pteducat, age_at_visit, fs_iq, ct_l_bankssts:cvol_r_transverse_temporal) %>% 
+  filter(dxcurren == 2 | dxcurren == 3) %>% 
+  mutate(dxcurren = ifelse(dxcurren == 2, 0, 1),
+         dxcurren = as.factor(dxcurren))
+
+levels(adni$dxcurren)
+
+md.pattern(adni)
+
+adni_sub1 = adni %>% 
+  select(rid, dxcurren, ptgender)
+
+adni_sub2 = adni %>% 
+  select(-rid, -dxcurren, -ptgender)
+
+adni_sub2 = scale(adni_sub2, center = TRUE, scale = TRUE) %>% 
+  as_tibble()
+
+adni = cbind(adni_sub1, adni_sub2) %>% 
+  select(-rid)
+
+
+
+```
+
+
+```{r}
+
+x = model.matrix(dxcurren~., adni)[,-1]
+
+y = adni$dxcurren
+dxcurren = as.numeric(adni$dxcurren == 1)
+
+?corrplot
+corrplot(cor(x), LABELS = NONE)
+table(y)
+
+adni.pca = prcomp(x, center = TRUE, scale = TRUE)
+summary(adni.pca)
+str(adni.pca)
+
+# 18 eigen values
+get_eig(adni.pca)
+
+fviz_eig(adni.pca, choice = c("variance", "eigenvalue"), geom = c("bar", "line"), ncp = 20)
+
+```
+
+
+```{r}
+
+adni.pcs = adni.pca$x[,1:18]
+head(adni.pcs, 20)
+
+adni.pcst = cbind(adni.pcs, dxcurren) %>% 
+  as_tibble() %>% 
+  mutate(dxcurren = ifelse(dxcurren == 1, "AD", "MCI"),
+         dxcurren = as.factor(dxcurren),
+         dxcurren = fct_relevel(dxcurren, "MCI"))
+
+levels(adni.pcst$dxcurren)
+
+```
+
+
+```{r}
+
+
+rowTrain = createDataPartition(y = adni.pcst$dxcurren,
+                               p = 0.80,
+                               list = FALSE)
+
+
+```
+
+### try logistic
+
+
+```{r}
+
+ctrl = trainControl(method = "repeatedcv",
+                    repeats = 10,
+                    summaryFunction = twoClassSummary,
+                    classProbs = TRUE)
+
+set.seed(1)
+model.glm = train(x = adni.pcst[rowTrain, 1:18],
+                  y = adni.pcst$dxcurren[rowTrain],
+                  method = "glm",
+                  metric = "ROC",
+                  trControl = ctrl)
+
+
+```
+
+
+```{r}
+
+glmnGrid = expand.grid(.alpha = seq(0, 1, length = 6), .lambda = exp(seq(-6, -2, length = 20)))
+set.seed(1)
+model.glmn = train(x = adni.pcst[rowTrain,1:18], 
+                   y = adni.pcst$dxcurren[rowTrain],
+                   method = "glmnet",
+                   tuneGrid = glmnGrid,
+                   metric = "ROC",
+                   trControl = ctrl)
+plot(model.glmn, xTrans = function(x) log(x))
+
+
+```
+
+
+
+```{r}
+
+model.lda = train(x = adni.pcst[rowTrain, 1:18],
+                  y = adni.pcst$dxcurren[rowTrain],
+                  method = "lda",
+                  metric = "ROC",
+                  trControl = ctrl)
+
+```
+
+
+```{r}
+
+
+
+res = resamples(list(GLM = model.glm, LDA = model.lda))
+summary(res)
+
+glm.pred = predict(model.glm, newdata = adni.pcst[-rowTrain,], type = "prob")[,2]
+lda.pred = predict(model.lda, newdata = adni.pcst[-rowTrain,], type = "prob")[,2]
+
+roc.lda = roc(adni.pcst$dxcurren[-rowTrain], lda.pred)
+roc.glm = roc(adni.pcst$dxcurren[-rowTrain], glm.pred)
+
+
+plot(roc.glm, legacy.axes = TRUE)
+plot(roc.lda, col = 3, add = TRUE)
+
+
+auc <- c(roc.glm$auc[1],roc.lda$auc[1])
+
+modelNames <- c("glm","lda")
+legend("bottomright", legend = paste0(modelNames, ": ", round(auc,3)), col = 1:2, lwd = 2)
+
+```
+
+```{r}
+x = model.matrix(dxcurren~., adni.pcst)[,-1]
+
+y = adni$dxcurren
+dxcurren = as.numeric(adni$dxcurren == 1)
+
+
+corrplot(cor(x), lbaels = "NONE")
+
+library(ggpubr)
+ggqqplot(adni.pcst$PC1)
+shapiro.test(adni.pcst$PC1)
+
+```
+
+
